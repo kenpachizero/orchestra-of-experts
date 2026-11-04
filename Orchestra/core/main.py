@@ -3,11 +3,11 @@ Orchestra of Experts - Main entry point
 
 Startup sequence:
 1. Ensure llmfit is present (clone if missing)
-2. Initialise the Conductor (router)
-3. Scan available experts
-4. Enter the main interaction loop
-5. Let the Conductor decide which expert to call
-6. (Future) Load → Run → Unload the chosen expert
+2. On first run, offer to set up General models via llmfit recommendations
+3. Initialise the Conductor (router)
+4. Scan available experts
+5. Enter the main interaction loop
+6. Let the Conductor decide which expert to call
 """
 
 import sys
@@ -19,6 +19,7 @@ CURRENT_DIR = Path(__file__).parent
 sys.path.insert(0, str(CURRENT_DIR))
 
 from router import Conductor
+from model_setup import is_first_run, run_model_setup
 
 LLMFIT_DIR = CURRENT_DIR / "llmfit"
 LLMFIT_REPO = "https://github.com/AlexsJones/llmfit.git"
@@ -78,8 +79,18 @@ def startup():
     ensure_llmfit()
     print()
 
+    # 2. First-run model setup for General folder
+    if is_first_run():
+        print("[Startup] First run detected (General folder is empty).")
+        print("          Would you like to see recommended models for your hardware?")
+        answer = input("          Run model setup now? [Y/n]: ").strip().lower()
+        if answer in ("", "y", "yes"):
+            run_model_setup(interactive=True)
+        else:
+            print("[Startup] Skipped. You can run it later by typing: models")
+        print()
+
     print("[Startup] Initialising Conductor...")
-    # Point at the parent Orchestra folder
     orchestra_root = CURRENT_DIR.parent
     conductor = Conductor(orchestra_root=orchestra_root)
 
@@ -89,7 +100,8 @@ def startup():
         print(f"           • {expert}")
     print()
 
-    print("[Startup] System ready. Type your request (or 'quit' to exit).")
+    print("[Startup] System ready.")
+    print("          Commands:  models  |  quit")
     print("-" * 60)
     return conductor
 
@@ -106,11 +118,18 @@ def main_loop(conductor: Conductor):
         if not user_input:
             continue
 
-        if user_input.lower() in {"quit", "exit", "q"}:
+        lower = user_input.lower()
+
+        if lower in {"quit", "exit", "q"}:
             print("[Shutdown] Goodbye.")
             break
 
-        # Hand everything to the Conductor / router
+        # Built-in command: re-run model recommendations / setup
+        if lower in {"models", "setup", "setup models", "recommend"}:
+            run_model_setup(interactive=True)
+            continue
+
+        # Hand everything else to the Conductor / router
         result = conductor.run(user_input)
         print(f"\nOrchestra: {result}")
 
