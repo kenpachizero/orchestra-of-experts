@@ -10,11 +10,14 @@ from pathlib import Path
 from typing import Optional
 import json
 
+from loader import ExpertLoader
+
 
 class Conductor:
     def __init__(self, orchestra_root: str | Path = "Orchestra"):
         self.root = Path(orchestra_root)
         self.available_experts = self._scan_experts()
+        self.loader = ExpertLoader()
 
     def _scan_experts(self) -> dict:
         """
@@ -147,9 +150,9 @@ class Conductor:
         """
         High-level entry point.
         1. Decide which expert to use
-        2. (Future) Load expert
-        3. (Future) Run expert
-        4. (Future) Unload expert
+        2. Load the expert
+        3. Run the expert
+        4. (Optionally) Unload – currently left loaded until the next different expert is needed
         5. Return result
         """
         decision = self.decide(user_message)
@@ -157,12 +160,28 @@ class Conductor:
         print("[Conductor] Decision:")
         print(json.dumps(decision, indent=2))
 
-        # Placeholder – real loading/running will go here later
-        if decision["action"] == "call_expert":
-            expert = decision["expert_path"]
-            return f"[Stub] Would now load and run expert: {expert}\nInstruction: {decision['instruction']}"
+        if decision["action"] == "final_answer":
+            return decision.get("answer", "No answer generated.")
 
-        return decision.get("answer", "No answer generated.")
+        if decision["action"] == "call_expert":
+            expert_key = decision["expert_path"]
+
+            # Resolve the key to a real filesystem path
+            if expert_key not in self.available_experts:
+                return f"[Conductor] ERROR: Expert '{expert_key}' not found in available experts."
+
+            expert_info = self.available_experts[expert_key]
+            expert_path = expert_info["path"]
+
+            # Load → Run
+            success = self.loader.load(expert_path)
+            if not success:
+                return f"[Conductor] Failed to load expert: {expert_key}"
+
+            output = self.loader.run(decision["instruction"])
+            return output
+
+        return "[Conductor] Unknown action."
 
 
 if __name__ == "__main__":
