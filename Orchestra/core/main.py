@@ -2,27 +2,34 @@
 Orchestra of Experts - Main entry point
 
 Startup sequence:
-1. Ensure llama-cpp-python is installed (install if missing)
-2. Ensure llmfit is present (clone if missing)
-3. On first run, offer to set up General models via llmfit recommendations
-4. Initialise the Conductor (router)
-5. Scan available experts
-6. Enter the main interaction loop
+1. Ensure we are running inside a project virtual environment
+2. Detect GPU backend (CUDA / Metal / ROCm) and install matching llama-cpp-python
+3. Ensure llmfit is present (clone if missing)
+4. On first run, offer to set up General models via llmfit recommendations
+5. Initialise the Conductor and enter the interaction loop
 
 Compatible with: Linux, macOS, Windows
 """
 
+import os
 import sys
 import subprocess
 import importlib.util
+import platform
+import shutil
 from pathlib import Path
 
-# Make sure we can import local modules even if run from different directories
-CURRENT_DIR = Path(__file__).parent
-sys.path.insert(0, str(CURRENT_DIR))
-
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent.parent          # orchestra-of-experts/
+VENV_DIR = PROJECT_ROOT / ".venv"
 LLMFIT_DIR = CURRENT_DIR / "llmfit"
 LLMFIT_REPO = "https://github.com/AlexsJones/llmfit.git"
+
+# Make local imports work
+sys.path.insert(0, str(CURRENT_DIR))
 
 
 def print_banner():
@@ -33,58 +40,180 @@ def print_banner():
     print()
 
 
-def ensure_llama_cpp() -> bool:
-    """
-    Make sure llama-cpp-python is available.
-    If missing, attempt to install the CPU version via pip.
+# ---------------------------------------------------------------------------
+# Virtual environment bootstrap
+# ---------------------------------------------------------------------------
+def in_venv() -> bool:
+    """Return True if we are already running inside a virtual environment."""
+    return (
+        hasattr(sys, "real_prefix")
+        or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix)
+        or bool(os.environ.get("VIRTUAL_ENV"))
+    )
 
-    Works on Linux, macOS, and Windows.
-    For GPU acceleration the user should install the appropriate
-    wheel manually (see llama-cpp-python docs).
+
+def get_venv_python() -> Path:
+    """Return the path to the Python executable inside our .venv."""
+    if platform.system() == "Windows":
+        return VENV_DIR / "Scripts" / "python.exe"
+    return VENV_DIR / "bin" / "python"
+
+
+def ensure_venv() -> None:
     """
+    Create a project virtual environment if needed and re-launch
+    this script inside it.
+    """
+    if in_venv():
+        print("[Startup] Running inside virtual environment.")
+        return
+
+    print("[Startup] No virtual environment detected.")
+    print(f"          Creating one at: {VENV_DIR}")
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(VENV_DIR)],
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print("[Startup] ERROR: Failed to create virtual environment.")
+        print(e)
+        sys.exit(1)
+
+    venv_python = get_venv_python()
+    if not venv_python.exists():
+        print("[Startup] ERROR: Virtual environment created but Python not found.")
+        sys.exit(1)
+
+    print("[Startup] Virtual environment ready. Re-launching inside it...")
+    print()
+
+    # Re-execute this script with the venv Python
+    os.execv(str(venv_python), [str(venv_python), str(Path(__file__).resolve())] + sys.argv[1:])
+
+
+# ---------------------------------------------------------------------------
+# GPU detection + llama-cpp-python install
+# ---------------------------------------------------------------------------
+def detect_gpu_backend() -> str:
+    """
+    Detect the best available GPU backend.
+
+    Returns one of: "cuda", "metal", "rocm", "cpu"
+    """
+    system = platform.system()
+    machine = platform.machine().lower()
+
+    # Apple Silicon → Metal
+    if system == "Darwin" and machine in ("arm64", "aarch64"):
+        print("[Startup] Detected Apple Silicon → Metal")
+        return "metal"
+
+    # NVIDIA CUDA
+    if shutil.which("nvidia-smi"):
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                print(f"[Startup] Detected NVIDIA GPU → CUDA")
+                print(f"           {result.stdout.strip().splitlines()[0]}")
+                return "cuda"
+        except Exception:
+            pass
+
+    # AMD ROCm
+    if shutil.which("rocm-smi") or Path("/opt/rocm").exists():
+        print("[Startup] Detected AMD ROCm")
+        return "rocm"
+
+    print("[Startup] No supported GPU acceleration detected → CPU")
+    return "cpu"
+
+
+def install_llama_cpp(backend: str) -> bool:
+    """
+    Install llama-cpp-python for the given backend.
+    Falls back to plain CPU install on failure.
+    """
+    python = sys.executable
+    base_cmd = [python, "-m", "pip", "install", "--upgrade", "llama-cpp-python"]
+
+    env = os.environ.copy()
+
+    if backend == "cuda":
+        print("[Startup] Installing llama-cpp-python with CUDA support...")
+        # Official pre-built CUDA wheels (when available)
+        cmd = base_cmd + [
+            "--extra-index-url",
+            "https://abetlen.github.io/llama-cpp-python/whl/cu121",
+        ]
+        # Also set CMAKE_ARGS as a fallback for source builds
+        env["CMAKE_ARGS"] = "-DGGML_CUDA=on"
+
+    elif backend == "metal":
+        print("[Startup] Installing llama-cpp-python with Metal support...")
+        env["CMAKE_ARGS"] = "-DGGML_METAL=on"
+        cmd = base_cmd
+
+    elif backend == "rocm":
+        print("[Startup] Installing llama-cpp-python with ROCm support...")
+        env["CMAKE_ARGS"] = "-DGGML_HIPBLAS=on"
+        cmd = base_cmd
+
+    else:
+        print("[Startup] Installing llama-cpp-python (CPU)...")
+        cmd = base_cmd
+
+    try:
+        subprocess.run(cmd, check=True, env=env)
+        return True
+    except subprocess.CalledProcessError:
+        if backend != "cpu":
+            print(f"[Startup] {backend.upper()} install failed — falling back to CPU...")
+            try:
+                subprocess.run(base_cmd, check=True)
+                return True
+            except subprocess.CalledProcessError:
+                return False
+        return False
+
+
+def ensure_llama_cpp() -> bool:
+    """Ensure llama-cpp-python is importable, installing it if necessary."""
     if importlib.util.find_spec("llama_cpp") is not None:
         print("[Startup] llama-cpp-python found.")
         return True
 
     print("[Startup] llama-cpp-python not found.")
-    print("          Attempting to install (CPU version)...")
-    print("          This may take a minute.\n")
+    backend = detect_gpu_backend()
+    print()
 
-    try:
-        # Use the same Python interpreter that is running this script
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "llama-cpp-python"]
-        result = subprocess.run(cmd, check=True)
+    success = install_llama_cpp(backend)
 
-        # Verify the install worked
-        if importlib.util.find_spec("llama_cpp") is not None:
-            print("[Startup] llama-cpp-python installed successfully.")
-            return True
-        else:
-            print("[Startup] Install finished but the package still cannot be imported.")
-            print("          Try restarting the terminal / IDE and run again.")
-            return False
+    # Force a fresh import check
+    if success and importlib.util.find_spec("llama_cpp") is not None:
+        print("[Startup] llama-cpp-python installed successfully.")
+        return True
 
-    except subprocess.CalledProcessError as e:
-        print("[Startup] ERROR: Failed to install llama-cpp-python.")
-        print("          You can install it manually with:")
-        print(f"            {sys.executable} -m pip install llama-cpp-python")
-        print()
-        print("          For GPU support see:")
-        print("            https://github.com/abetlen/llama-cpp-python#installation-with-hardware-acceleration")
-        return False
-    except Exception as e:
-        print(f"[Startup] Unexpected error while installing: {e}")
-        return False
+    print("[Startup] ERROR: Could not install or import llama-cpp-python.")
+    print("          Manual install options:")
+    print(f"            {sys.executable} -m pip install llama-cpp-python")
+    print()
+    print("          GPU-specific instructions:")
+    print("            https://github.com/abetlen/llama-cpp-python#installation-with-hardware-acceleration")
+    return False
 
 
+# ---------------------------------------------------------------------------
+# llmfit
+# ---------------------------------------------------------------------------
 def ensure_llmfit() -> bool:
-    """
-    Make sure the llmfit folder exists.
-    If missing, clone the official repository.
-
-    llmfit is MIT licensed (Copyright (c) 2026 Alex Jones).
-    We use it as-is and keep the original LICENSE.
-    """
+    """Clone llmfit if the folder is missing."""
     if LLMFIT_DIR.exists() and any(LLMFIT_DIR.iterdir()):
         print("[Startup] llmfit found.")
         return True
@@ -106,8 +235,7 @@ def ensure_llmfit() -> bool:
         return True
     except FileNotFoundError:
         print("[Startup] ERROR: git is not installed. Cannot download llmfit.")
-        print("           Install git, or manually clone:")
-        print(f"           git clone {LLMFIT_REPO} {LLMFIT_DIR}")
+        print(f"           Manually run: git clone {LLMFIT_REPO} {LLMFIT_DIR}")
         return False
     except subprocess.CalledProcessError as e:
         print("[Startup] ERROR: Failed to clone llmfit.")
@@ -115,26 +243,31 @@ def ensure_llmfit() -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Main startup + loop
+# ---------------------------------------------------------------------------
 def startup():
-    """Run all startup checks and initialise the system."""
     print_banner()
 
-    # 1. Ensure llama-cpp-python is available
+    # 1. Virtual environment
+    ensure_venv()
+    print()
+
+    # 2. llama-cpp-python (with GPU detection)
     if not ensure_llama_cpp():
         print("\n[Startup] Cannot continue without llama-cpp-python.")
-        print("          Install it and run again.")
         sys.exit(1)
     print()
 
-    # 2. Ensure llmfit is available
+    # 3. llmfit
     ensure_llmfit()
     print()
 
-    # Local imports after dependency check
+    # Local imports after dependency checks
     from router import Conductor
     from model_setup import is_first_run, run_model_setup
 
-    # 3. First-run model setup for General folder
+    # 4. First-run model setup
     if is_first_run():
         print("[Startup] First run detected (General folder is empty).")
         print("          Would you like to see recommended models for your hardware?")
@@ -162,7 +295,6 @@ def startup():
 
 
 def main_loop(conductor):
-    """Simple interactive loop. The Conductor handles all routing."""
     from model_setup import run_model_setup
 
     while True:
@@ -181,12 +313,10 @@ def main_loop(conductor):
             print("[Shutdown] Goodbye.")
             break
 
-        # Built-in command: re-run model recommendations / setup
         if lower in {"models", "setup", "setup models", "recommend"}:
             run_model_setup(interactive=True)
             continue
 
-        # Hand everything else to the Conductor / router
         result = conductor.run(user_input)
         print(f"\nOrchestra: {result}")
 
