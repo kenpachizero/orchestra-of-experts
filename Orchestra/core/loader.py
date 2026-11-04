@@ -22,6 +22,44 @@ except ImportError:
     Llama = None  # type: ignore
 
 
+# Default system prompts by expert type / category
+SYSTEM_PROMPTS = {
+    "General": (
+        "You are a helpful, capable general-purpose assistant. "
+        "Answer clearly and accurately. If you are unsure, say so."
+    ),
+    "Maths": (
+        "You are a precise mathematics expert. "
+        "Show your reasoning step by step. Prefer exact answers when possible."
+    ),
+    "Code": (
+        "You are an expert software engineer. "
+        "Write clean, correct, well-structured code. "
+        "Explain non-obvious parts briefly. Prefer modern best practices."
+    ),
+    "Literature": (
+        "You are a skilled writer and literature expert. "
+        "Write with clarity, style, and appropriate tone for the request."
+    ),
+    "Reasoning": (
+        "You are a careful reasoning expert. "
+        "Think step by step. Examine assumptions. Reach well-supported conclusions."
+    ),
+    "Research": (
+        "You are a thorough research assistant. "
+        "Be accurate, cite reasoning, and distinguish facts from speculation."
+    ),
+    "Judge": (
+        "You are an impartial judge. "
+        "Compare answers fairly, list strengths and weaknesses, and pick the best one with clear reasons."
+    ),
+    "default": (
+        "You are a helpful expert assistant. "
+        "Be clear, accurate, and concise."
+    ),
+}
+
+
 class ExpertLoader:
     def __init__(
         self,
@@ -33,6 +71,7 @@ class ExpertLoader:
         self.current_expert: Optional[str] = None
         self.current_model: Any = None
         self.current_gguf: Optional[Path] = None
+        self.current_category: str = "default"
         self.load_count = 0
 
         # Inference defaults
@@ -61,6 +100,27 @@ class ExpertLoader:
             return ggufs[0]
 
         return None
+
+    def _detect_category(self, expert_path: Path) -> str:
+        """Infer a high-level category from the path for system prompt selection."""
+        parts = [p.lower() for p in expert_path.parts]
+
+        if "code" in parts:
+            return "Code"
+        if "maths" in parts or "math" in parts:
+            return "Maths"
+        if "literature" in parts:
+            return "Literature"
+        if "reasoning" in parts:
+            return "Reasoning"
+        if "research" in parts:
+            return "Research"
+        if "judge" in parts:
+            return "Judge"
+        if "general" in parts:
+            return "General"
+
+        return "default"
 
     def load(self, expert_path: str | Path) -> bool:
         """
@@ -110,6 +170,7 @@ class ExpertLoader:
             )
             self.current_expert = str(expert_path)
             self.current_gguf = gguf_path
+            self.current_category = self._detect_category(expert_path)
             self.load_count += 1
 
             elapsed = time.perf_counter() - start
@@ -121,6 +182,7 @@ class ExpertLoader:
             self.current_model = None
             self.current_expert = None
             self.current_gguf = None
+            self.current_category = "default"
             return False
 
     def unload(self) -> None:
@@ -130,13 +192,26 @@ class ExpertLoader:
 
         print(f"[Loader] Unloading expert: {Path(self.current_expert).name}")
 
-        # Drop the reference and force garbage collection
         self.current_model = None
         self.current_expert = None
         self.current_gguf = None
+        self.current_category = "default"
         gc.collect()
 
         print("[Loader] Unloaded.")
+
+    def _build_prompt(self, instruction: str) -> str:
+        """Build a clean chat-style prompt using the expert's system message."""
+        system = SYSTEM_PROMPTS.get(self.current_category, SYSTEM_PROMPTS["default"])
+
+        # Simple but effective ChatML-style / Instruct format that works
+        # well across many GGUF models (Llama, Qwen, Mistral, etc.)
+        prompt = (
+            f"System: {system}\n\n"
+            f"User: {instruction}\n\n"
+            f"Assistant:"
+        )
+        return prompt
 
     def run(
         self,
@@ -157,18 +232,13 @@ class ExpertLoader:
         print(f"[Loader] Running expert ({len(instruction)} chars)...")
 
         try:
-            # Simple chat-style prompt. Can be improved later with proper chat templates.
-            prompt = (
-                "You are a helpful expert assistant.\n\n"
-                f"User: {instruction}\n\n"
-                "Assistant:"
-            )
+            prompt = self._build_prompt(instruction)
 
             output = self.current_model(
                 prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                stop=stop or ["User:", "\nUser:"],
+                stop=stop or ["User:", "\nUser:", "System:"],
                 echo=False,
             )
 
@@ -183,6 +253,7 @@ class ExpertLoader:
         return {
             "current_expert": self.current_expert,
             "current_gguf": str(self.current_gguf) if self.current_gguf else None,
+            "current_category": self.current_category,
             "is_loaded": self.current_model is not None,
             "load_count": self.load_count,
             "llama_cpp_available": LLAMA_CPP_AVAILABLE,
