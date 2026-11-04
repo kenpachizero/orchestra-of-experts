@@ -23,8 +23,7 @@ from pathlib import Path
 # Paths
 # ---------------------------------------------------------------------------
 CURRENT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_DIR.parent.parent          # orchestra-of-experts/
-VENV_DIR = PROJECT_ROOT / ".venv"
+VENV_DIR = CURRENT_DIR / ".venv"                 # lives inside Orchestra/core/
 LLMFIT_DIR = CURRENT_DIR / "llmfit"
 LLMFIT_REPO = "https://github.com/AlexsJones/llmfit.git"
 
