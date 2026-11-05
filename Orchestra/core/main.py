@@ -146,12 +146,10 @@ def install_llama_cpp(backend: str) -> bool:
 
     if backend == "cuda":
         print("[Startup] Installing llama-cpp-python with CUDA support...")
-        # Official pre-built CUDA wheels (when available)
         cmd = base_cmd + [
             "--extra-index-url",
             "https://abetlen.github.io/llama-cpp-python/whl/cu121",
         ]
-        # Also set CMAKE_ARGS as a fallback for source builds
         env["CMAKE_ARGS"] = "-DGGML_CUDA=on"
 
     elif backend == "metal":
@@ -194,7 +192,6 @@ def ensure_llama_cpp() -> bool:
 
     success = install_llama_cpp(backend)
 
-    # Force a fresh import check
     if success and importlib.util.find_spec("llama_cpp") is not None:
         print("[Startup] llama-cpp-python installed successfully.")
         return True
@@ -243,6 +240,67 @@ def ensure_llmfit() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Memory CLI helpers
+# ---------------------------------------------------------------------------
+def handle_memory_command(conductor, user_input: str) -> bool:
+    """
+    Handle memory-related commands.
+    Returns True if the input was a memory command (and was handled).
+    """
+    palace = conductor.palace
+    parts = user_input.strip().split(maxsplit=1)
+    cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    # status
+    if cmd in {"memory", "palace"} and not arg:
+        status = palace.status()
+        print("\n[Memory Palace]")
+        print(f"  Root:    {status['palace_root']}")
+        print(f"  Wings:   {status['wings']}  {status['wing_names']}")
+        print(f"  Rooms:   {status['rooms']}")
+        print(f"  Drawers: {status['drawers']}")
+        return True
+
+    # recall <query>
+    if cmd == "recall":
+        if not arg:
+            print("Usage: recall <query>")
+            return True
+        hits = palace.search(arg, limit=5)
+        if not hits:
+            print(f"No memories found for: {arg}")
+        else:
+            print(f"\n[Recall] {len(hits)} result(s) for '{arg}':\n")
+            for i, h in enumerate(hits, 1):
+                print(f"  {i}. ({h.get('wing')}/{h.get('room')})")
+                print(f"     {h.get('content', '')[:300]}")
+                print()
+        return True
+
+    # remember <text>
+    if cmd == "remember":
+        if not arg:
+            print("Usage: remember <text to store>")
+            return True
+        drawer = palace.remember(
+            content=arg,
+            wing="manual",
+            room="notes",
+            tags=["manual"],
+        )
+        print(f"[Memory] Stored in manual/notes (id: {drawer['id']})")
+        return True
+
+    # remember wing/room: <text>   (optional richer form)
+    if cmd == "remember" and ":" in arg:
+        # already handled above as plain text; keep simple for now
+        pass
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Main startup + loop
 # ---------------------------------------------------------------------------
 def startup():
@@ -287,8 +345,13 @@ def startup():
         print(f"           • {expert}")
     print()
 
+    # Palace status
+    palace_status = conductor.palace.status()
+    print(f"[Startup] Memory Palace: {palace_status['drawers']} drawers across {palace_status['wings']} wings")
+    print()
+
     print("[Startup] System ready.")
-    print("          Commands:  models  |  quit")
+    print("          Commands:  models | memory | recall <q> | remember <text> | quit")
     print("-" * 60)
     return conductor
 
@@ -314,6 +377,10 @@ def main_loop(conductor):
 
         if lower in {"models", "setup", "setup models", "recommend"}:
             run_model_setup(interactive=True)
+            continue
+
+        # Memory Palace commands
+        if handle_memory_command(conductor, user_input):
             continue
 
         result = conductor.run(user_input)
