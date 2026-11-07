@@ -1,0 +1,19 @@
+{
+  "n_ctx": 4096,
+  "n_gpu_layers": -1,
+  "n_threads": null,
+  "max_tokens": 1024,
+  "temperature": 0.7,
+  "verbose_loader": false,
+  "auto_remember": false,
+  "memory_recall_limit": 3,
+  "default_memory_wing": "conversations",
+  "enabled_experts": [],
+  "auto_judge_when_multiple": true,
+  "judge_expert_key": "Judge",
+  "gui_theme": "dark",
+  "gui_width": 1100,
+  "gui_height": 720,
+  "sidebar_visible": true,
+  "orchestra_root": null
+}
